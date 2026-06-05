@@ -108,6 +108,26 @@ neon_cli() {
   fi
 }
 
+# Ensure the neonctl CLI is installed so commands are fast (no per-call pnpm dlx
+# download). Best-effort: a failed global install is non-fatal — neon_cli's
+# pnpm dlx fallback still works.
+_ensure_cli() {
+  if command -v neonctl >/dev/null 2>&1; then
+    log "neonctl CLI present ($(command -v neonctl))"
+    return 0
+  fi
+  if command -v pnpm >/dev/null 2>&1; then
+    log "neonctl CLI not found — installing globally (pnpm add -g neonctl)"
+    if pnpm add -g neonctl >/dev/null 2>&1; then
+      log "neonctl installed"
+    else
+      log "global install failed — the wrapper will fall back to 'pnpm dlx neonctl@latest'"
+    fi
+  else
+    log "no pnpm and no neonctl — install one; the wrapper errors without either"
+  fi
+}
+
 # Echo --project-id flag when NEON_PROJECT_ID is set (for scoped subcommands).
 _project_flag() {
   [ -n "${NEON_PROJECT_ID:-}" ] && printf -- '--project-id\n%s\n' "$NEON_PROJECT_ID"
@@ -210,7 +230,7 @@ cmd_configure() {
 
   cmd_link_cli
   cmd_enable_permissions
-  command -v neonctl >/dev/null 2>&1 || log "note: 'neonctl' not on PATH — install with 'pnpm add -g neonctl' (or it runs via 'pnpm dlx')"
+  _ensure_cli
 
   if [ "$interactive" = false ]; then
     log "non-interactive — PATH + permissions done"
