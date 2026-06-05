@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+#
+# atelier-neon — thin wrapper over the official Neon CLI (neonctl), for atelier
+# agents.
+#
+# Auth is per-project: NEON_API_KEY (and optional NEON_PROJECT_ID) are read from
+# the current project's .env (kept gitignored by atelier's .env* guardrail) or
+# from the environment. Exposes a small, auditable set of subcommands;
+# destructive operations (branch-delete, project-create, project-delete) are
+# intentionally left out of atelier's allowlist so they require operator
+# confirmation.
+#
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+log()  { printf '==> %s\n' "$*"; }
+die()  { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+require() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+
+# atelier user-level settings.json (persists across tasks; never the per-task
+# template). Resolution order mirrors how atelier/Claude Code locate it.
+ATELIER_SETTINGS="${NEON_ATELIER_SETTINGS:-${ATELIER_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/settings.json}"
+
+# Permissions granted to agents for routine Neon operations. The gated commands
+# (branch-delete, project-create, project-delete) are intentionally absent so
+# they fall back to operator confirmation.
+NEON_ALLOW='[
+  "Bash(atelier-neon me:*)",
+  "Bash(atelier-neon projects:*)",
+  "Bash(atelier-neon branches:*)",
+  "Bash(atelier-neon databases:*)",
+  "Bash(atelier-neon roles:*)",
+  "Bash(atelier-neon operations:*)",
+  "Bash(atelier-neon connstr:*)",
+  "Bash(atelier-neon branch-create:*)",
+  "Skill(neon-integration:*)"
+]'
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Thin wrapper over the official Neon CLI (neonctl). Reads NEON_API_KEY (and
+optional NEON_PROJECT_ID) from the current project's .env (or the environment).
+Uses an installed \`neonctl\`, else \`pnpm dlx neonctl@latest\`.
+
+USAGE
+  ${SCRIPT_NAME} <command> [args]
+
+READ-ONLY
+  me                           Current Neon user
+  projects                     List projects
+  branches                     List branches
+  databases                    List databases
+  roles                        List roles
+  operations                   List recent operations
+  connstr [branch]             Get a connection string (alias: cs)
+
+WRITE (in atelier allowlist)
+  branch-create [name]         Create a branch
+
+GATED (left out of allowlist — operator confirms)
+  branch-delete <id|name>      Delete a branch
+  project-create [name]        Create a project
+  project-delete <id>          Delete a project
+
+SETUP
+  configure [--non-interactive]  PATH link + permissions, then (inside a project)
+                               write NEON_API_KEY to its .env.
+  link-cli [target]            Symlink this CLI onto PATH (default ~/.local/bin)
+  enable-permissions           Merge the allowlist into atelier user settings.json
+  disable-permissions          Remove that allowlist
+
+ENVIRONMENT
+  NEON_API_KEY                 Required. Neon API key.
+  NEON_PROJECT_ID             Optional. Default project id for scoped commands.
+  NEON_ENV_FILE               Optional. Path to the project .env (default: .env)
+EOF
+}
+
+# Load NEON_* from the project's .env without leaking unrelated variables.
+# Real environment values take precedence.
+_load_project_env() {
+  local f="${NEON_ENV_FILE:-.env}" line key val
+  [ -f "$f" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      NEON_API_KEY=*|NEON_PROJECT_ID=*)
+        key="${line%%=*}"
+        val="${line#*=}"
+        val="${val%\"}"; val="${val#\"}"
+        val="${val%\'}"; val="${val#\'}"
+        if [ -z "${!key:-}" ]; then export "$key=$val"; fi
+        ;;
+    esac
+  done < "$f"
+}
+
+neon_cli() {
+  if command -v neonctl >/dev/null 2>&1; then
+    neonctl "$@"
+  else
+    require pnpm
+    pnpm dlx neonctl@latest "$@"
+  fi
+}
+
+# Echo --project-id flag when NEON_PROJECT_ID is set (for scoped subcommands).
+_project_flag() {
+  [ -n "${NEON_PROJECT_ID:-}" ] && printf -- '--project-id\n%s\n' "$NEON_PROJECT_ID"
+}
+
+# Run an authenticated neonctl command (loads .env, requires key).
+nrun() {
+  _load_project_env
+  [ -n "${NEON_API_KEY:-}" ] || die "set NEON_API_KEY in this project's .env"
+  neon_cli "$@"
+}
+
+# Run a scoped neonctl command, injecting --project-id when set. Loads the
+# project .env first so NEON_PROJECT_ID is resolved before the flag is built.
+nrun_scoped() {
+  _load_project_env
+  local extra=()
+  while IFS= read -r line; do [ -n "$line" ] && extra+=("$line"); done < <(_project_flag)
+  nrun "$@" ${extra+"${extra[@]}"}
+}
+
+cmd_me()             { nrun me; }
+cmd_projects()       { nrun projects list "$@"; }
+cmd_branches()       { nrun_scoped branches list "$@"; }
+cmd_databases()      { nrun_scoped databases list "$@"; }
+cmd_roles()          { nrun_scoped roles list "$@"; }
+cmd_operations()     { nrun_scoped operations list "$@"; }
+cmd_connstr()        { nrun_scoped connection-string "$@"; }
+cmd_branch_create()  { nrun_scoped branches create "$@"; }
+cmd_branch_delete()  { nrun_scoped branches delete "${1:?branch id|name required}"; }
+cmd_project_create() { nrun projects create "$@"; }
+cmd_project_delete() { nrun projects delete "${1:?project id required}"; }
+
+cmd_enable_permissions() {
+  require jq
+  local file="$ATELIER_SETTINGS" tmp
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || printf '{}\n' > "$file"
+  jq empty "$file" 2>/dev/null || die "not valid JSON: ${file}"
+  tmp="$(mktemp)"
+  jq --argjson add "$NEON_ALLOW" '
+    .permissions = (.permissions // {})
+    | .permissions.allow = ((.permissions.allow // []) as $cur
+        | $cur + ($add - $cur))
+  ' "$file" > "$tmp" && mv "$tmp" "$file"
+  log "neon permissions merged into ${file}"
+}
+
+cmd_disable_permissions() {
+  require jq
+  local file="$ATELIER_SETTINGS" tmp
+  [ -f "$file" ] || { log "nothing to do (${file} does not exist)"; return 0; }
+  jq empty "$file" 2>/dev/null || die "not valid JSON: ${file}"
+  tmp="$(mktemp)"
+  jq --argjson rm "$NEON_ALLOW" '
+    if .permissions.allow then .permissions.allow -= $rm else . end
+  ' "$file" > "$tmp" && mv "$tmp" "$file"
+  log "neon permissions removed from ${file}"
+}
+
+# Resolve this script's real path (following symlinks), portably for bash 3.2.
+_self_path() {
+  local src="${BASH_SOURCE[0]}" dir
+  while [ -h "$src" ]; do
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in /*) ;; *) src="${dir}/${src}" ;; esac
+  done
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  printf '%s/%s' "$dir" "$(basename "$src")"
+}
+
+cmd_link_cli() {
+  local target="${1:-$HOME/.local/bin/atelier-neon}" dir
+  dir="$(dirname "$target")"
+  mkdir -p "$dir"
+  ln -sf "$(_self_path)" "$target"
+  log "linked CLI -> ${target}"
+  case ":${PATH}:" in
+    *":${dir}:"*) ;;
+    *) log "note: ${dir} is not on your PATH" ;;
+  esac
+}
+
+_set_env_var() {
+  local file="$1" key="$2" val="$3"
+  touch "$file"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    log "${key} already present in ${file} — leaving it"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$file"
+    log "added ${key} to ${file}"
+  fi
+}
+
+cmd_configure() {
+  local interactive=true
+  [ "${1:-}" = "--non-interactive" ] && interactive=false
+  [ -t 0 ] || interactive=false
+
+  cmd_link_cli
+  cmd_enable_permissions
+  command -v neonctl >/dev/null 2>&1 || log "note: 'neonctl' not on PATH — install with 'pnpm add -g neonctl' (or it runs via 'pnpm dlx')"
+
+  if [ "$interactive" = false ]; then
+    log "non-interactive — PATH + permissions done"
+    log "per project: add NEON_API_KEY to that project's .env"
+    return 0
+  fi
+
+  if [ -e .git ] || [ -f package.json ] || [ -f .env ]; then
+    local envf="${NEON_ENV_FILE:-.env}" key
+    if grep -q '^NEON_API_KEY=' "$envf" 2>/dev/null; then
+      log "NEON_API_KEY already in ${envf}"
+    else
+      printf 'Neon API key for this project (input hidden, Enter to skip): '
+      read -rs key; echo
+      if [ -n "$key" ]; then _set_env_var "$envf" NEON_API_KEY "$key"; else log "skipped key"; fi
+    fi
+    log "auth lives in ${envf} (atelier keeps .env* gitignored)"
+  else
+    log "not inside a project — add NEON_API_KEY to a project's .env, then re-run from its directory."
+  fi
+}
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    me)                  cmd_me "$@" ;;
+    projects)            cmd_projects "$@" ;;
+    branches)            cmd_branches "$@" ;;
+    databases)           cmd_databases "$@" ;;
+    roles)               cmd_roles "$@" ;;
+    operations)          cmd_operations "$@" ;;
+    connstr|cs)          cmd_connstr "$@" ;;
+    branch-create)       cmd_branch_create "$@" ;;
+    branch-delete)       cmd_branch_delete "$@" ;;
+    project-create)      cmd_project_create "$@" ;;
+    project-delete)      cmd_project_delete "$@" ;;
+    enable-permissions)  cmd_enable_permissions "$@" ;;
+    disable-permissions) cmd_disable_permissions "$@" ;;
+    configure)           cmd_configure "$@" ;;
+    link-cli)            cmd_link_cli "$@" ;;
+    -h|--help|help|"")   usage ;;
+    *) die "unknown command: ${cmd} (try --help)" ;;
+  esac
+}
+
+main "$@"
