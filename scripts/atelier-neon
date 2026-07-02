@@ -6,9 +6,11 @@
 # Auth is per-project: NEON_API_KEY (and optional NEON_PROJECT_ID) are read from
 # the current project's .env (kept gitignored by atelier's .env* guardrail) or
 # from the environment. Exposes a small, auditable set of subcommands;
-# destructive operations (branch-delete, project-create, project-delete) are
-# intentionally left out of atelier's allowlist so they require operator
-# confirmation.
+# destructive/costly operations (branch-delete, project-create, project-delete)
+# are intentionally left out of atelier's allowlist AND enforce an in-CLI
+# confirmation: an explicit --yes flag, or an interactive prompt on a TTY
+# (project-delete makes you type the project id back). Non-interactive without
+# --yes dies before neonctl is invoked.
 #
 set -euo pipefail
 IFS=$'\n\t'
@@ -57,15 +59,19 @@ READ-ONLY
   databases                    List databases
   roles                        List roles
   operations                   List recent operations
-  connstr [branch]             Get a connection string (alias: cs)
+  connstr [branch]             Get a connection string (alias: cs). Prints a
+                               credentials warning to stderr; stdout stays the
+                               bare connection string for piping.
 
 WRITE (in atelier allowlist)
   branch-create [name]         Create a branch
 
-GATED (left out of allowlist — operator confirms)
-  branch-delete <id|name>      Delete a branch
-  project-create [name]        Create a project
-  project-delete <id>          Delete a project
+GATED (left out of allowlist AND confirmed in-CLI: pass --yes, or answer the
+interactive prompt; non-interactive without --yes fails)
+  branch-delete [--yes] <id|name>   Delete a branch
+  project-create [--yes] [name]     Create a project (incurs cost)
+  project-delete [--yes] <id>       Delete a project (interactively, you must
+                               type the project id back to confirm)
 
 SETUP
   configure [--non-interactive]  PATH link + permissions, then (inside a project)
@@ -155,11 +161,76 @@ cmd_branches()       { nrun_scoped branches list "$@"; }
 cmd_databases()      { nrun_scoped databases list "$@"; }
 cmd_roles()          { nrun_scoped roles list "$@"; }
 cmd_operations()     { nrun_scoped operations list "$@"; }
-cmd_connstr()        { nrun_scoped connection-string "$@"; }
+# stdout must stay the bare connection string (callers pipe it), so the
+# credentials warning goes to stderr, before neonctl runs.
+cmd_connstr() {
+  printf 'warning: output contains live credentials — never write it to a tracked file or logs\n' >&2
+  nrun_scoped connection-string "$@"
+}
 cmd_branch_create()  { nrun_scoped branches create "$@"; }
-cmd_branch_delete()  { nrun_scoped branches delete "${1:?branch id|name required}"; }
-cmd_project_create() { nrun projects create "$@"; }
-cmd_project_delete() { nrun projects delete "${1:?project id required}"; }
+
+# Confirmation gate for destructive/costly commands. Requires an explicit
+# --yes flag or an interactive y/N answer on a TTY; non-interactive without
+# --yes dies before neonctl is ever invoked.
+_confirm_gated() {
+  local op="$1" detail="$2" assume_yes="$3" reply
+  [ "$assume_yes" = "true" ] && return 0
+  if [ ! -t 0 ]; then
+    die "'${op}' needs confirmation: re-run with --yes, or run it from an interactive terminal (${detail})"
+  fi
+  printf "About to run '%s' — %s. Continue? [y/N] " "$op" "$detail" >&2
+  IFS= read -r reply
+  case "$reply" in
+    y|Y|yes|YES) ;;
+    *) die "aborted '${op}' (no confirmation)" ;;
+  esac
+}
+
+# Stronger gate for project deletion: interactively, the operator must type the
+# project id back verbatim. --yes still bypasses (for scripted operator use).
+_confirm_typed() {
+  local op="$1" token="$2" assume_yes="$3" reply
+  [ "$assume_yes" = "true" ] && return 0
+  if [ ! -t 0 ]; then
+    die "'${op}' needs confirmation: re-run with --yes, or run it from an interactive terminal (would permanently delete project ${token})"
+  fi
+  printf "'%s' will PERMANENTLY delete project '%s' and all its branches/data.\nType the project id to confirm: " "$op" "$token" >&2
+  IFS= read -r reply
+  [ "$reply" = "$token" ] || die "aborted '${op}' (confirmation did not match project id)"
+}
+
+# Strip a --yes flag out of "$@" into ARGS_YES / ARGS_REST (bash 3.2 safe).
+_split_yes() {
+  ARGS_YES=false
+  ARGS_REST=()
+  local a
+  for a in "$@"; do
+    case "$a" in
+      --yes|-y) ARGS_YES=true ;;
+      *) ARGS_REST+=("$a") ;;
+    esac
+  done
+}
+
+cmd_branch_delete() {
+  _split_yes "$@"
+  local target="${ARGS_REST[0]:?branch id|name required}"
+  _confirm_gated "branch-delete" "delete branch ${target}" "$ARGS_YES"
+  nrun_scoped branches delete "$target"
+}
+
+cmd_project_create() {
+  _split_yes "$@"
+  _confirm_gated "project-create" "create a new Neon project (incurs cost)${ARGS_REST[0]:+: ${ARGS_REST[0]}}" "$ARGS_YES"
+  nrun projects create ${ARGS_REST+"${ARGS_REST[@]}"}
+}
+
+cmd_project_delete() {
+  _split_yes "$@"
+  local id="${ARGS_REST[0]:?project id required}"
+  _confirm_typed "project-delete" "$id" "$ARGS_YES"
+  nrun projects delete "$id"
+}
 
 cmd_enable_permissions() {
   require jq
