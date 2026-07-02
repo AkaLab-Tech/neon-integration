@@ -4,6 +4,13 @@ Completed work log. Newest first. Each entry references the PR(s) that delivered
 
 ## 2026-07
 
+### Release 0.2.0 — 2026-07-02
+**PR:** _pending_ (branch `chore/release-0.2.0`)
+
+Version bump for the PR #5 contract change: `branch-delete`, `project-create`
+and `project-delete` now require `--yes` non-interactively. Also realigns the
+CLI `VERSION` (was 0.1.0) with `plugin.json` (0.1.1), a pre-existing drift.
+
 ### Guard destructive ops with in-CLI confirmation — 2026-07-01
 **PR:** [#5](https://github.com/AkaLab-Tech/neon-integration/pull/5) — branch `fix/guard-destructive-ops`
 
