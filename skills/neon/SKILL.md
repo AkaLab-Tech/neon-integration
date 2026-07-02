@@ -23,11 +23,11 @@ description: >-
 | `atelier-neon databases` | List databases |
 | `atelier-neon roles` | List roles |
 | `atelier-neon operations` | Recent operations |
-| `atelier-neon connstr [branch]` | Get a connection string |
+| `atelier-neon connstr [branch]` | Get a connection string (credentials warning on stderr) |
 | `atelier-neon branch-create [name]` | Create a branch |
-| `atelier-neon branch-delete <id\|name>` | Delete a branch (operator confirmation) |
-| `atelier-neon project-create [name]` | Create a project (operator confirmation) |
-| `atelier-neon project-delete <id>` | Delete a project (operator confirmation) |
+| `atelier-neon branch-delete [--yes] <id\|name>` | Delete a branch (in-CLI confirmation) |
+| `atelier-neon project-create [--yes] [name]` | Create a project — incurs cost (in-CLI confirmation) |
+| `atelier-neon project-delete [--yes] <id>` | Delete a project (in-CLI confirmation: type the id back) |
 
 ## Branch-per-task flow
 
@@ -40,8 +40,14 @@ description: >-
 
 - Resolve targets with `projects` / `branches` first; never guess an id.
 - `branch-delete`, `project-create`, and `project-delete` are not in the
-  allowlist — confirm with the operator before running them.
+  allowlist AND the CLI itself refuses to run them without confirmation: pass
+  `--yes`, or answer the interactive prompt (`project-delete` makes you type
+  the project id back). Without a TTY and without `--yes` they die before
+  `neonctl` is invoked. Only pass `--yes` after the operator explicitly
+  approved that exact operation.
 - `connstr` returns live database credentials — never write its output into a
-  tracked file; the project `.env` (gitignored) is the place for it.
+  tracked file or logs; the project `.env` (gitignored) is the place for it.
+  The CLI prints a stderr warning to that effect; stdout remains the bare
+  connection string for piping.
 - If `NEON_PROJECT_ID` is set in `.env`, scoped commands target that project
   automatically.

@@ -57,9 +57,17 @@ This plugin never edits atelier's shipped `settings.template.json`.
 `/neon-integration:setup` (or `atelier-neon enable-permissions`) merges the
 read/write allowlist into your **user-level** `settings.json`
 (`$ATELIER_CONFIG_DIR/settings.json`) — idempotent, order-preserving, no
-clobber. The gated commands (`branch-delete`, `project-create`, `project-delete`)
-are deliberately omitted so they fall back to operator confirmation. Undo with
-`atelier-neon disable-permissions`.
+clobber. The gated commands (`branch-delete`, `project-create`,
+`project-delete`) are deliberately omitted so they fall back to operator
+confirmation, **and** the wrapper enforces its own guard: pass `--yes`, or
+answer the interactive prompt (`project-delete` requires typing the project id
+back); without a terminal and without `--yes` they refuse to run before
+`neonctl` is invoked. `project-create` is gated too because a new project
+incurs cost. Undo the allowlist with `atelier-neon disable-permissions`.
+
+Note on `connstr`: its stdout is the bare connection string (safe to pipe),
+and it prints a warning to stderr because the output contains live credentials
+— never write it to a tracked file or logs.
 
 ## Usage
 

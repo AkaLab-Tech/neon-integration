@@ -34,7 +34,9 @@ The repo is a flat plugin layout with no `src/` or `lib/` tree:
 - **Permissions**: `atelier-neon enable-permissions` / `disable-permissions` merge
   the allowlist into user-level `settings.json` (idempotent, order-preserving).
 - **Gated commands**: `branch-delete`, `project-create`, `project-delete` are
-  intentionally absent from the allowlist — always require operator confirmation.
+  intentionally absent from the allowlist AND enforce an in-CLI guard: `--yes`
+  flag or interactive confirmation (`project-delete` requires typing the
+  project id back); non-TTY without `--yes` dies before `neonctl` runs.
 - **CI**: no GitHub Actions workflows present.
 
 ## What this project is NOT
@@ -43,8 +45,11 @@ The repo is a flat plugin layout with no `src/` or `lib/` tree:
 
 ## Out of scope for AI agents
 
-- Never write `connstr` output into a tracked file — connection strings are
-  live credentials and belong only in a gitignored `.env`.
+- Never write `connstr` output into a tracked file or logs — connection strings
+  are live credentials and belong only in a gitignored `.env` (the CLI prints a
+  stderr warning; stdout stays the bare string).
 - Never `git add .env` or any file matching `.env*`.
 - `branch-delete`, `project-create`, and `project-delete` must not be run without
-  explicit operator confirmation (they are not in the permissions allowlist).
+  explicit operator confirmation (they are not in the permissions allowlist and
+  the CLI itself demands `--yes` or an interactive confirm). Never pass `--yes`
+  unless the operator approved that exact operation.
