@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "neon-integration",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Neon Postgres integration for atelier agents \u2014 manage projects, branches, and connection strings via the official Neon CLI",
   "author": {
     "name": "AkaLab-Tech",
