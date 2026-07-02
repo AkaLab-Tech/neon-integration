@@ -5,7 +5,7 @@ Completed work log. Newest first. Each entry references the PR(s) that delivered
 ## 2026-07
 
 ### Guard destructive ops with in-CLI confirmation — 2026-07-01
-**PR:** _pending_ (branch `fix/guard-destructive-ops`)
+**PR:** [#5](https://github.com/AkaLab-Tech/neon-integration/pull/5) — branch `fix/guard-destructive-ops`
 
 Audit hardening: `branch-delete`, `project-create` and `project-delete` were
 correctly excluded from the agent allowlist but had no in-CLI confirmation,
